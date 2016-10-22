@@ -1,0 +1,102 @@
+From c9d4b40ebe103702611017c7e86f77e612092976 Mon Sep 17 00:00:00 2001
+From: "Denis V. Lunev" <den@openvz.org>
+Date: Mon, 9 May 2016 16:30:07 +0300
+Subject: [PATCH 4/4] block: tolerate snapshot switching for temporary images
+
+Signed-off-by: Denis V. Lunev <den@openvz.org>
+---
+ block.c          |  8 ++++++++
+ block/snapshot.c | 44 +++++++++++++++++++++++++++++++-------------
+ 2 files changed, 39 insertions(+), 13 deletions(-)
+
+diff --git a/block.c b/block.c
+index d4939b4..804a85b 100644
+--- a/block.c
++++ b/block.c
+@@ -1466,6 +1466,14 @@ static int bdrv_append_temp_snapshot(BlockDriverState *bs, int flags,
+ 
+     bdrv_append(bs_snapshot, bs);
+ 
++    {
++        QEMUSnapshotInfo sn_info = {
++            .name = "clean-snapshot",
++            .id_str = "clean-snapshot",
++        };
++        bdrv_snapshot_create(bs_snapshot, &sn_info);
++    }
++
+ out:
+     QDECREF(snapshot_options);
+     g_free(tmp_filename);
+diff --git a/block/snapshot.c b/block/snapshot.c
+index 589c87e..3f93d3a 100644
+--- a/block/snapshot.c
++++ b/block/snapshot.c
+@@ -175,6 +175,31 @@ int bdrv_snapshot_create(BlockDriverState *bs,
+     return -ENOTSUP;
+ }
+ 
++static int bdrv_snapshot_goto_temp(BlockDriverState *bs,
++                                   const char *snapshot_id)
++{
++    BlockDriverState *bbs = backing_bs(bs);
++    int open_flags = bbs->open_flags;
++
++    Error *local_err = NULL;
++
++    int err = bdrv_reopen(bbs, open_flags | BDRV_O_RDWR, &local_err);
++    if (err < 0) {
++        goto done;
++    }
++    err = bdrv_snapshot_goto(bbs, snapshot_id);
++    bdrv_reopen(bbs, open_flags, &local_err);
++    if (err < 0) {
++        goto done;
++    }
++
++    err = bs->drv->bdrv_snapshot_goto(bs, "clean-snapshot");
++
++done:
++    error_free(local_err);
++    return err;
++}
++
+ int bdrv_snapshot_goto(BlockDriverState *bs,
+                        const char *snapshot_id)
+ {
+@@ -184,6 +209,11 @@ int bdrv_snapshot_goto(BlockDriverState *bs,
+     if (!drv) {
+         return -ENOMEDIUM;
+     }
++
++    if (bs->open_flags & BDRV_O_TEMPORARY) {
++        return bdrv_snapshot_goto_temp(bs, snapshot_id);
++    }
++
+     if (drv->bdrv_snapshot_goto) {
+         return drv->bdrv_snapshot_goto(bs, snapshot_id);
+     }
+@@ -501,19 +531,7 @@ static bool validate_bs(BlockDriverState *bs, BlockDriverState **vmstate_bs,
+     if (bdrv_snapshot_find(bs, &sn, name) < 0) {
+         BlockDriverState *bbs = backing_bs(bs);
+         if ((bs->open_flags & BDRV_O_TEMPORARY) && bbs != NULL) {
+-            QEMUSnapshotInfo sn_info;
+-
+-            if (!validate_bs(bbs, vmstate_bs, name, errp)) {
+-                return false;
+-            }
+-
+-            if (bdrv_snapshot_find(bbs, &sn_info, name) < 0) {
+-                return true;
+-            }
+-
+-            sn.vm_state_size = 0;
+-            bdrv_snapshot_create(bs, &sn_info);
+-            return true;
++            return validate_bs(bbs, vmstate_bs, name, errp);
+         }
+ 
+         if (!bdrv_can_snapshot(bs)) {
+-- 
+2.5.0
+

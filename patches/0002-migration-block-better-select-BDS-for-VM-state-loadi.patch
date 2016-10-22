@@ -1,0 +1,159 @@
+From 96127e53f0a8747b347cd1ed884fac968b188370 Mon Sep 17 00:00:00 2001
+From: "Denis V. Lunev" <den@openvz.org>
+Date: Thu, 14 Jan 2016 14:28:59 +0300
+Subject: [PATCH 2/4] migration, block: better select BDS for VM state loading
+
+This patch does 2 things:
+- it merges all snapshot validity checks for load_vmstate into one function
+- it now selects BDS to load VM state by availability of the state in the
+  snapshot
+
+This commit is preparatory to allow to select BDS to save snapshot for QMP.
+
+Signed-off-by: Denis V. Lunev <den@openvz.org>
+CC: Kevin Wolf <kwolf@redhat.com>
+CC: Juan Quintela <quintela@redhat.com>
+CC: Amit Shah <amit.shah@redhat.com>
+CC: Markus Armbruster <armbru@redhat.com>
+CC: Eric Blake <eblake@redhat.com>
+---
+ block/snapshot.c         | 61 ++++++++++++++++++++++++++++++++++++++++++++++++
+ include/block/snapshot.h |  1 +
+ migration/savevm.c       | 33 ++------------------------
+ 3 files changed, 64 insertions(+), 31 deletions(-)
+
+diff --git a/block/snapshot.c b/block/snapshot.c
+index e9d721d..3c714c7 100644
+--- a/block/snapshot.c
++++ b/block/snapshot.c
+@@ -491,3 +491,64 @@ BlockDriverState *bdrv_all_find_vmstate_bs(void)
+     }
+     return bs;
+ }
++
++
++static bool validate_bs(BlockDriverState *bs, BlockDriverState **vmstate_bs,
++                        const char *name, Error **errp)
++{
++    QEMUSnapshotInfo sn;
++
++    if (!bdrv_can_snapshot(bs)) {
++        if (!bdrv_is_inserted(bs) || bdrv_is_read_only(bs)) {
++            return true;
++        }
++        error_setg(errp,
++                   "Device '%s' is writable but does not support snapshots",
++                   bdrv_get_device_name(bs));
++        return false;
++    }
++
++    if (bdrv_snapshot_find(bs, &sn, name) < 0) {
++        error_setg(errp,
++                   "Device '%s' does not have the requested snapshot '%s'",
++                   bdrv_get_device_name(bs), name);
++        return false;
++    }
++
++    if (sn.vm_state_size == 0) {
++        return true;
++    }
++    if (*vmstate_bs != NULL) {
++        error_setg(errp, "Devices '%s' and '%s' both has vmstate with the "
++                   "requested snapshot '%s'", bdrv_get_device_name(bs),
++                   bdrv_get_device_name(*vmstate_bs), name);
++        return false;
++    }
++    *vmstate_bs = bs;
++
++    return true;
++}
++
++BlockDriverState *bdrv_all_validate_snapshot(const char *name, Error **errp)
++{
++    BlockDriverState *bs = NULL;
++    BlockDriverState *vmstate_bs = NULL;
++
++    while ((bs = bdrv_next(bs))) {
++        AioContext *ctx = bdrv_get_aio_context(bs);
++        bool ok;
++
++        aio_context_acquire(ctx);
++        ok = validate_bs(bs, &vmstate_bs, name, errp);
++        aio_context_release(ctx);
++
++        if (!ok) {
++            return NULL;
++        }
++    }
++
++    if (vmstate_bs == NULL) {
++        error_setg(errp, "VM state for the snapshot '%s' not found", name);
++    }
++    return vmstate_bs;
++}
+diff --git a/include/block/snapshot.h b/include/block/snapshot.h
+index e5c0553..f60d7ad 100644
+--- a/include/block/snapshot.h
++++ b/include/block/snapshot.h
+@@ -91,5 +91,6 @@ int bdrv_all_create_snapshot(QEMUSnapshotInfo *sn,
+                              BlockDriverState **first_bad_bs);
+ 
+ BlockDriverState *bdrv_all_find_vmstate_bs(void);
++BlockDriverState *bdrv_all_validate_snapshot(const char *name, Error **errp);
+ 
+ #endif
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 7219a50..68bdf62 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -2087,45 +2087,16 @@ void qmp_xen_save_devices_state(const char *filename, Error **errp)
+ int load_vmstate(const char *name, Error **errp)
+ {
+     BlockDriverState *bs, *bs_vm_state;
+-    QEMUSnapshotInfo sn;
+     QEMUFile *f;
+     int ret;
+     AioContext *aio_context;
+ 
+-    if (!bdrv_all_can_snapshot(&bs)) {
+-        error_setg(errp,
+-                   "Device '%s' is writable but does not support snapshots",
+-                   bdrv_get_device_name(bs));
+-        return -ENOTSUP;
+-    }
+-    ret = bdrv_all_find_snapshot(name, &bs);
+-    if (ret < 0) {
+-        error_setg(errp,
+-                   "Device '%s' does not have the requested snapshot '%s'",
+-                   bdrv_get_device_name(bs), name);
+-        return ret;
+-    }
+-
+-    bs_vm_state = bdrv_all_find_vmstate_bs();
+-    if (!bs_vm_state) {
+-        error_setg(errp, "No block device supports snapshots");
++    bs_vm_state = bdrv_all_validate_snapshot(name, errp);
++    if (bs_vm_state == NULL) {
+         return -ENOTSUP;
+     }
+     aio_context = bdrv_get_aio_context(bs_vm_state);
+ 
+-    /* Don't even try to load empty VM states */
+-    aio_context_acquire(aio_context);
+-    ret = bdrv_snapshot_find(bs_vm_state, &sn, name);
+-    aio_context_release(aio_context);
+-    if (ret < 0) {
+-        error_setg_errno(errp, -ret, "Snapshot '%s' not found", name);
+-        return ret;
+-    } else if (sn.vm_state_size == 0) {
+-        error_setg(errp, "Snapshot '%s' is a disk-only snapshot and must be "
+-                   "reverted offline using qemu-img", name);
+-        return -EINVAL;
+-    }
+-
+     /* Flush all IO requests so they don't interfere with the new state.  */
+     bdrv_drain_all();
+ 
+-- 
+2.5.0
+

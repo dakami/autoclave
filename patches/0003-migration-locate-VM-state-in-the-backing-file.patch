@@ -1,0 +1,64 @@
+From 35a54e3c3003fc90fff3f6bd7bc137a9a364fdab Mon Sep 17 00:00:00 2001
+From: "Denis V. Lunev" <den@openvz.org>
+Date: Mon, 9 May 2016 15:33:04 +0300
+Subject: [PATCH 3/4] migration: locate VM state in the backing file
+
+Locate VM state in the backing file if QEMU is started with -snapshot.
+WARNING: the image QEMU is started from MUST be switched to that state
+already.
+
+Signed-off-by: Denis V. Lunev <den@openvz.org>
+---
+ block/snapshot.c | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/block/snapshot.c b/block/snapshot.c
+index 3c714c7..589c87e 100644
+--- a/block/snapshot.c
++++ b/block/snapshot.c
+@@ -498,17 +498,34 @@ static bool validate_bs(BlockDriverState *bs, BlockDriverState **vmstate_bs,
+ {
+     QEMUSnapshotInfo sn;
+ 
+-    if (!bdrv_can_snapshot(bs)) {
+-        if (!bdrv_is_inserted(bs) || bdrv_is_read_only(bs)) {
++    if (bdrv_snapshot_find(bs, &sn, name) < 0) {
++        BlockDriverState *bbs = backing_bs(bs);
++        if ((bs->open_flags & BDRV_O_TEMPORARY) && bbs != NULL) {
++            QEMUSnapshotInfo sn_info;
++
++            if (!validate_bs(bbs, vmstate_bs, name, errp)) {
++                return false;
++            }
++
++            if (bdrv_snapshot_find(bbs, &sn_info, name) < 0) {
++                return true;
++            }
++
++            sn.vm_state_size = 0;
++            bdrv_snapshot_create(bs, &sn_info);
+             return true;
+         }
+-        error_setg(errp,
+-                   "Device '%s' is writable but does not support snapshots",
+-                   bdrv_get_device_name(bs));
+-        return false;
+-    }
+ 
+-    if (bdrv_snapshot_find(bs, &sn, name) < 0) {
++        if (!bdrv_can_snapshot(bs)) {
++            if (!bdrv_is_inserted(bs) || bdrv_is_read_only(bs)) {
++                return true;
++            }
++            error_setg(errp,
++                      "Device '%s' is writable but does not support snapshots",
++                       bdrv_get_device_name(bs));
++            return false;
++        }
++
+         error_setg(errp,
+                    "Device '%s' does not have the requested snapshot '%s'",
+                    bdrv_get_device_name(bs), name);
+-- 
+2.5.0
+

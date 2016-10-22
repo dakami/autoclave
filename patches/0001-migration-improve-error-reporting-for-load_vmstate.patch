@@ -1,0 +1,158 @@
+From 8c02ed4e05a3970f5b0d51cd8a5d76c7e4703e52 Mon Sep 17 00:00:00 2001
+From: "Denis V. Lunev" <den@openvz.org>
+Date: Thu, 14 Jan 2016 14:28:57 +0300
+Subject: [PATCH 1/4] migration: improve error reporting for load_vmstate
+
+The patch adds Error ** parameter to load_vmstate call and fills error
+inside. The caller after that properly reports error either through
+monitor or via local stderr facility during VM start.
+
+This helper will be useful too for qmp_loadvm implementation.
+
+Signed-off-by: Denis V. Lunev <den@openvz.org>
+CC: Juan Quintela <quintela@redhat.com>
+CC: Amit Shah <amit.shah@redhat.com>
+CC: Markus Armbruster <armbru@redhat.com>
+CC: Eric Blake <eblake@redhat.com>
+---
+ include/sysemu/sysemu.h |  2 +-
+ migration/savevm.c      | 28 ++++++++++++++++------------
+ monitor.c               |  5 ++++-
+ vl.c                    |  4 +++-
+ 4 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/include/sysemu/sysemu.h b/include/sysemu/sysemu.h
+index 38fb3ca..4fd9954 100644
+--- a/include/sysemu/sysemu.h
++++ b/include/sysemu/sysemu.h
+@@ -77,7 +77,7 @@ void qemu_remove_exit_notifier(Notifier *notify);
+ void qemu_add_machine_init_done_notifier(Notifier *notify);
+ 
+ void hmp_savevm(Monitor *mon, const QDict *qdict);
+-int load_vmstate(const char *name);
++int load_vmstate(const char *name, Error **errp);
+ void hmp_delvm(Monitor *mon, const QDict *qdict);
+ void hmp_info_snapshots(Monitor *mon, const QDict *qdict);
+ 
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 16ba443..7219a50 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -2084,7 +2084,7 @@ void qmp_xen_save_devices_state(const char *filename, Error **errp)
+     }
+ }
+ 
+-int load_vmstate(const char *name)
++int load_vmstate(const char *name, Error **errp)
+ {
+     BlockDriverState *bs, *bs_vm_state;
+     QEMUSnapshotInfo sn;
+@@ -2093,20 +2093,22 @@ int load_vmstate(const char *name)
+     AioContext *aio_context;
+ 
+     if (!bdrv_all_can_snapshot(&bs)) {
+-        error_report("Device '%s' is writable but does not support snapshots.",
+-                     bdrv_get_device_name(bs));
++        error_setg(errp,
++                   "Device '%s' is writable but does not support snapshots",
++                   bdrv_get_device_name(bs));
+         return -ENOTSUP;
+     }
+     ret = bdrv_all_find_snapshot(name, &bs);
+     if (ret < 0) {
+-        error_report("Device '%s' does not have the requested snapshot '%s'",
+-                     bdrv_get_device_name(bs), name);
++        error_setg(errp,
++                   "Device '%s' does not have the requested snapshot '%s'",
++                   bdrv_get_device_name(bs), name);
+         return ret;
+     }
+ 
+     bs_vm_state = bdrv_all_find_vmstate_bs();
+     if (!bs_vm_state) {
+-        error_report("No block device supports snapshots");
++        error_setg(errp, "No block device supports snapshots");
+         return -ENOTSUP;
+     }
+     aio_context = bdrv_get_aio_context(bs_vm_state);
+@@ -2116,10 +2118,11 @@ int load_vmstate(const char *name)
+     ret = bdrv_snapshot_find(bs_vm_state, &sn, name);
+     aio_context_release(aio_context);
+     if (ret < 0) {
++        error_setg_errno(errp, -ret, "Snapshot '%s' not found", name);
+         return ret;
+     } else if (sn.vm_state_size == 0) {
+-        error_report("This is a disk-only snapshot. Revert to it offline "
+-            "using qemu-img.");
++        error_setg(errp, "Snapshot '%s' is a disk-only snapshot and must be "
++                   "reverted offline using qemu-img", name);
+         return -EINVAL;
+     }
+ 
+@@ -2128,15 +2131,16 @@ int load_vmstate(const char *name)
+ 
+     ret = bdrv_all_goto_snapshot(name, &bs);
+     if (ret < 0) {
+-        error_report("Error %d while activating snapshot '%s' on '%s'",
+-                     ret, name, bdrv_get_device_name(bs));
++        error_setg_errno(errp, -ret,
++                         "Error while activating snapshot '%s' on '%s'",
++                         name, bdrv_get_device_name(bs));
+         return ret;
+     }
+ 
+     /* restore the VM state */
+     f = qemu_fopen_bdrv(bs_vm_state, 0);
+     if (!f) {
+-        error_report("Could not open VM state file");
++        error_setg(errp, "Could not open VM state file");
+         return -EINVAL;
+     }
+ 
+@@ -2150,7 +2154,7 @@ int load_vmstate(const char *name)
+ 
+     migration_incoming_state_destroy();
+     if (ret < 0) {
+-        error_report("Error %d while loading VM state", ret);
++        error_setg_errno(errp, -ret, "Error while loading VM state");
+         return ret;
+     }
+ 
+diff --git a/monitor.c b/monitor.c
+index d1c1930..a13c6c9 100644
+--- a/monitor.c
++++ b/monitor.c
+@@ -1756,10 +1756,13 @@ static void hmp_loadvm(Monitor *mon, const QDict *qdict)
+ {
+     int saved_vm_running  = runstate_is_running();
+     const char *name = qdict_get_str(qdict, "name");
++    Error *local_err = NULL;
+ 
+     vm_stop(RUN_STATE_RESTORE_VM);
+ 
+-    if (load_vmstate(name) == 0 && saved_vm_running) {
++    if (load_vmstate(name, &local_err) < 0) {
++        error_report_err(local_err);
++    } else if (saved_vm_running) {
+         vm_start();
+     }
+ }
+diff --git a/vl.c b/vl.c
+index 5fd22cb..3817363 100644
+--- a/vl.c
++++ b/vl.c
+@@ -4628,8 +4628,10 @@ int main(int argc, char **argv, char **envp)
+     qemu_system_reset(VMRESET_SILENT);
+     register_global_state();
+     if (loadvm) {
+-        if (load_vmstate(loadvm) < 0) {
++        Error *local_err = NULL;
++        if (load_vmstate(loadvm, &local_err) < 0) {
+             autostart = 0;
++            error_report_err(local_err);
+         }
+     }
+ 
+-- 
+2.5.0
+
