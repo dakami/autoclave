@@ -1,0 +1,12 @@
+service vnc
+{
+ disable = no
+ socket_type = stream
+ protocol = tcp
+ wait = no
+ user = root
+ server = /autoclave/launchers/linux_launch.sh
+ type = UNLISTED
+ port = 5905
+}
+
