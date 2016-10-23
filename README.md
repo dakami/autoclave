@@ -32,7 +32,9 @@ a handful of syscalls and memory maps.
     $ vde_switch -d -s user.sock
     $ slirpvde -d -dhcp -s user.sock
     $ wget http://mirrors.xmission.com/linuxmint/iso//stable/18/linuxmint-18-mate-64bit.iso 
-    $ qemu-system-x86_64 -cdrom linuxmint-18-mate-64bit.iso -m 4G -vnc :25,lossy -net nic -net vde,sock=user.sock -global kvm-apic.vapic=false -smp 4,sockets=2,cores=2,threads=1 -vga qxl -enable-kvm -monitor stdio
+    $ qemu-system-x86_64 -cdrom linuxmint-18-mate-64bit.iso -m 4G -vnc :25,lossy -net nic -net \
+      vde,sock=user.sock -global kvm-apic.vapic=false -smp 4,sockets=2,cores=2,threads=1 \
+      -vga qxl -enable-kvm -monitor stdio
     QEMU 2.7.50 monitor - type 'help' for more information
     (qemu) migrate "exec: ls"
     (qemu) 
