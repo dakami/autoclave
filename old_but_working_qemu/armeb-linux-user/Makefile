@@ -1,0 +1,1 @@
+/home/ubuntu/go/src/github.com/hyperhq/qemu/Makefile.target

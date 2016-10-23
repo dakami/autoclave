@@ -1,0 +1,201 @@
+diff --git a/ui/vnc.c b/ui/vnc.c
+index 1bedc95..cd12271 100644
+--- a/ui/vnc.c
++++ b/ui/vnc.c
+@@ -46,6 +46,12 @@
+ #include "qom/object_interfaces.h"
+ #include "qemu/cutils.h"
+ 
++#ifdef CONFIG_SECCOMP
++#include "sysemu/seccomp.h"
++#endif
++
++void apply_autoclave(void);
++
+ #define VNC_REFRESH_INTERVAL_BASE GUI_REFRESH_INTERVAL_DEFAULT
+ #define VNC_REFRESH_INTERVAL_INC  50
+ #define VNC_REFRESH_INTERVAL_MAX  GUI_REFRESH_INTERVAL_IDLE
+@@ -2980,6 +2986,8 @@ static void vnc_connect(VncDisplay *vd, QIOChannelSocket *sioc,
+     VncState *vs = g_new0(VncState, 1);
+     bool first_client = QTAILQ_EMPTY(&vd->clients);
+     int i;
++    
++    apply_autoclave();
+ 
+     vs->sioc = sioc;
+     object_ref(OBJECT(vs->sioc));
+@@ -3901,3 +3909,174 @@ static void vnc_register_config(void)
+     qemu_add_opts(&qemu_vnc_opts);
+ }
+ opts_init(vnc_register_config);
++
++struct QemuSeccompSyscallAutoclave {
++    int32_t num;
++    uint8_t priority;
++};
++
++void apply_autoclave(void)
++{
++    int rc;
++    unsigned int i;
++    scmp_filter_ctx ctx;
++    int rootfd;
++    char procpath[256];
++    struct dirent **fdi;
++    int fdcount;
++
++    static const struct QemuSeccompSyscallAutoclave whitelist[] = {
++
++{ SCMP_SYS(nanosleep), 250 },
++        { SCMP_SYS(read), 250 },
++        { SCMP_SYS(readv), 250 },
++        { SCMP_SYS(preadv), 250 },
++        { SCMP_SYS(pread64), 250 },
++
++        { SCMP_SYS(write), 250 },
++        { SCMP_SYS(writev), 250 },
++        { SCMP_SYS(pwritev), 250 },
++        { SCMP_SYS(pwrite64), 250 },
++
++        
++        { SCMP_SYS(clock_gettime), 250 },
++        { SCMP_SYS(gettimeofday), 250 },
++        { SCMP_SYS(futex), 250 },
++        { SCMP_SYS(poll), 250 },
++        { SCMP_SYS(ppoll), 250 },
++        { SCMP_SYS(exit), 250 },
++        { SCMP_SYS(exit_group), 250 },
++        
++        { SCMP_SYS(rt_sigprocmask), 250 },
++        { SCMP_SYS(rt_sigtimedwait), 250 },
++        { SCMP_SYS(rt_sigreturn), 250 },
++        { SCMP_SYS(rt_sigaction), 250 },
++        { SCMP_SYS(rt_sigpending), 250 },
++        { SCMP_SYS(rt_sigtimedwait), 250 },
++        { SCMP_SYS(rt_sigqueueinfo), 250 },
++        { SCMP_SYS(rt_sigsuspend), 250 },
++        
++        // do I care?
++        { SCMP_SYS(mprotect), 250 },
++        { SCMP_SYS(madvise), 250 },
++
++        // to be locked down harder
++        { SCMP_SYS(clone), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(mmap), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(munmap), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(mremap), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(brk), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(recvfrom), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(recvmsg), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(sendmsg), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(sendto), 250 }, // this will definitely have to be locked down
++        { SCMP_SYS(fstat), 250 }, // this will definitely have to be locked down
++
++        { SCMP_SYS(select), 250 },
++        { SCMP_SYS(set_robust_list), 250 },
++
++        { SCMP_SYS(restart_syscall), 250 },
++        { SCMP_SYS(close), 250 },
++
++
++
++    };
++
++    ctx = seccomp_init(SCMP_ACT_ERRNO(13));
++
++    // apply this filter to all threads in our group.  Only
++    // historical; new threads will inherit.
++    rc = seccomp_attr_set(ctx, SCMP_FLTATR_CTL_TSYNC, 1);
++
++    if (ctx == NULL) {
++        rc = -1;
++        goto seccomp_return;
++
++    }
++
++    // XXX rewrite with proper handling
++    for (i = 0; i < ARRAY_SIZE(whitelist); i++) {
++        rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, whitelist[i].num, 0);
++        if (rc < 0) {
++            fprintf(stdout, "AHH. %u\n", rc);
++            //goto seccomp_return;
++        }
++        rc = seccomp_syscall_priority(ctx, whitelist[i].num,
++                                      whitelist[i].priority);
++    }
++    for (i = 0; i < ARRAY_SIZE(whitelist); i++) {
++        rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, whitelist[i].num, 0);
++        if (rc < 0) {
++            fprintf(stdout, "AHH. %u %u\n", i, rc);
++            //goto seccomp_return;
++        }
++        rc = seccomp_syscall_priority(ctx, whitelist[i].num,
++                                      whitelist[i].priority);
++        if (rc < 0) {
++            fprintf(stdout, "AHH2. %i %u\n", i, rc);
++            //goto seccomp_return;
++        }
++    }
++
++    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(13), SCMP_SYS(open), 0);
++    seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1, SCMP_A0(SCMP_CMP_EQ, 1));
++    // XXX THIS IS HIDEOUS.  Welcome to Linux, where the proc FS is the best
++    // place to get this data. The other possibility is to incrementally build
++    // up ctx as qemu loadvm's. That will seemingly work but requires a fairly
++    // global context to poke at, and I'm still not sure you can get the five
++    // or so file descriptors.
++
++    // Note that normal TOCTOU vulns don't count here because the attacker
++    // isn't in control yet.
++
++    rootfd = open("/", O_RDONLY);
++
++    snprintf(procpath, sizeof(procpath), "/proc/%i/fd", getpid());
++    fdcount = scandir(procpath, &fdi, NULL, alphasort);
++
++    while (fdcount--) {
++       char lname[256];
++       char lbuf[256];
++       int active_fd;
++
++       memset(lname, 0, sizeof(lname));
++       snprintf(lname, sizeof(lname), "%s/%s", procpath, fdi[fdcount]->d_name);
++       memset(lbuf, 0, sizeof(lbuf));
++
++       rc = readlinkat(rootfd, lname, lbuf, sizeof(lbuf));
++
++       active_fd = atoi(fdi[fdcount]->d_name);
++
++
++       if(1) {
++
++          if (strncmp(lbuf, "anon_inode:kvm-vm", sizeof(lbuf)) == 0) {
++           seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
++                            SCMP_A0(SCMP_CMP_EQ, active_fd));
++           /*seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 2,
++                            SCMP_A0(SCMP_CMP_EQ, active_fd),
++                            SCMP_A1(SCMP_CMP_EQ, KVM_IRQ_LINE_STATUS));
++           seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 2,
++                            SCMP_A0(SCMP_CMP_EQ, active_fd),
++                            SCMP_A1(SCMP_CMP_EQ, 0xffffffffc008ae67));*/
++          }
++
++	  //VCPU's do all sorts of stuff now?  Clean this up.
++          if (strncmp(lbuf, "anon_inode:kvm-vcpu", sizeof(lbuf)) == 0) {
++              seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
++                            SCMP_A0(SCMP_CMP_EQ, active_fd));
++                            //SCMP_A1(SCMP_CMP_EQ, KVM_RUN));
++          }
++       }
++
++       free(fdi[fdcount]);
++    }
++    free(fdi);
++    close(rootfd);
++
++    seccomp_syscall_priority(ctx, SCMP_SYS(ioctl), 251);
++    rc = seccomp_load(ctx);
++
++seccomp_return:
++    seccomp_release(ctx);
++}

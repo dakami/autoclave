@@ -1,0 +1,136 @@
+diff --git a/exec.c b/exec.c
+index 8ffde75..888919a 100644
+--- a/exec.c
++++ b/exec.c
+@@ -1402,6 +1402,11 @@  static void qemu_ram_setup_dump(void *addr, ram_addr_t size)
+     }
+ }
+ 
++bool qemu_ram_is_shared(RAMBlock *rb)
++{
++    return rb->flags & RAM_SHARED;
++}
++
+ const char *qemu_ram_get_idstr(RAMBlock *rb)
+ {
+     return rb->idstr;
+diff --git a/include/migration/migration.h b/include/migration/migration.h
+index 3c96623..080b6b2 100644
+--- a/include/migration/migration.h
++++ b/include/migration/migration.h
+@@ -290,6 +290,7 @@  void migrate_add_blocker(Error *reason);
+  */
+ void migrate_del_blocker(Error *reason);
+ 
++bool migrate_bypass_shared_memory(void);
+ bool migrate_postcopy_ram(void);
+ bool migrate_zero_blocks(void);
+ 
+diff --git a/migration/migration.c b/migration/migration.c
+index 955d5ee..c87d136 100644
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -1189,6 +1189,15 @@  void qmp_migrate_set_downtime(double value, Error **errp)
+     max_downtime = (uint64_t)value;
+ }
+ 
++bool migrate_bypass_shared_memory(void)
++{
++    MigrationState *s;
++
++    s = migrate_get_current();
++
++    return s->enabled_capabilities[MIGRATION_CAPABILITY_BYPASS_SHARED_MEMORY];
++}
++
+ bool migrate_postcopy_ram(void)
+ {
+     MigrationState *s;
+diff --git a/migration/ram.c b/migration/ram.c
+index 815bc0e..f7c4081 100644
+--- a/migration/ram.c
++++ b/migration/ram.c
+@@ -605,6 +605,28 @@  static void migration_bitmap_sync_init(void)
+     num_dirty_pages_period = 0;
+     xbzrle_cache_miss_prev = 0;
+     iterations_prev = 0;
++    migration_dirty_pages = 0;
++}
++
++static void migration_bitmap_init(unsigned long *bitmap)
++{
++    RAMBlock *block;
++
++    bitmap_clear(bitmap, 0, last_ram_offset() >> TARGET_PAGE_BITS);
++    rcu_read_lock();
++    QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
++        if (!migrate_bypass_shared_memory() || !qemu_ram_is_shared(block)) {
++            bitmap_set(bitmap, block->offset >> TARGET_PAGE_BITS,
++                       block->used_length >> TARGET_PAGE_BITS);
++
++            /*
++             * Count the total number of pages used by ram blocks not including
++             * any gaps due to alignment or unplugs.
++             */
++            migration_dirty_pages += block->used_length >> TARGET_PAGE_BITS;
++        }
++    }
++    rcu_read_unlock();
+ }
+ 
+ static void migration_bitmap_sync(void)
+@@ -631,7 +653,9 @@  static void migration_bitmap_sync(void)
+     qemu_mutex_lock(&migration_bitmap_mutex);
+     rcu_read_lock();
+     QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
+-        migration_bitmap_sync_range(block->offset, block->used_length);
++        if (!migrate_bypass_shared_memory() || !qemu_ram_is_shared(block)) {
++            migration_bitmap_sync_range(block->offset, block->used_length);
++        }
+     }
+     rcu_read_unlock();
+     qemu_mutex_unlock(&migration_bitmap_mutex);
+@@ -1926,19 +1950,14 @@  static int ram_save_setup(QEMUFile *f, void *opaque)
+     ram_bitmap_pages = last_ram_offset() >> TARGET_PAGE_BITS;
+     migration_bitmap_rcu = g_new0(struct BitmapRcu, 1);
+     migration_bitmap_rcu->bmap = bitmap_new(ram_bitmap_pages);
+-    bitmap_set(migration_bitmap_rcu->bmap, 0, ram_bitmap_pages);
++    migration_bitmap_init(migration_bitmap_rcu->bmap);
+ 
+     if (migrate_postcopy_ram()) {
+         migration_bitmap_rcu->unsentmap = bitmap_new(ram_bitmap_pages);
+-        bitmap_set(migration_bitmap_rcu->unsentmap, 0, ram_bitmap_pages);
++        bitmap_copy(migration_bitmap_rcu->unsentmap,
++                    migration_bitmap_rcu->bmap, ram_bitmap_pages);
+     }
+ 
+-    /*
+-     * Count the total number of pages used by ram blocks not including any
+-     * gaps due to alignment or unplugs.
+-     */
+-    migration_dirty_pages = ram_bytes_total() >> TARGET_PAGE_BITS;
+-
+     memory_global_dirty_log_start();
+     migration_bitmap_sync();
+     qemu_mutex_unlock_ramlist();
+diff --git a/qapi-schema.json b/qapi-schema.json
+index 5658723..453e6d9 100644
+--- a/qapi-schema.json
++++ b/qapi-schema.json
+@@ -553,11 +553,15 @@ 
+ #          been migrated, pulling the remaining pages along as needed. NOTE: If
+ #          the migration fails during postcopy the VM will fail.  (since 2.6)
+ #
++# @bypass-shared-memory: the shared memory region will be bypassed on migration.
++#          This feature allows the memory region to be reused by new qemu(s)
++#          or be migrated separately. (since 2.8)
++#
+ # Since: 1.2
+ ##
+ { 'enum': 'MigrationCapability',
+   'data': ['xbzrle', 'rdma-pin-all', 'auto-converge', 'zero-blocks',
+-           'compress', 'events', 'postcopy-ram'] }
++           'compress', 'events', 'postcopy-ram', 'bypass-shared-memory'] }
+ 
+ ##
+ # @MigrationCapabilityStatus

@@ -1,22 +1,11 @@
----
- exec.c                        |  5 +++++
- include/exec/cpu-common.h     |  1 +
- include/migration/migration.h |  1 +
- migration/migration.c         |  9 +++++++++
- migration/ram.c               | 37 ++++++++++++++++++++++++++++---------
- qapi-schema.json              |  6 +++++-
- qmp-commands.hx               |  3 +++
- 7 files changed, 52 insertions(+), 10 deletions(-)
-
 diff --git a/exec.c b/exec.c
-index 8ffde75..888919a 100644
+index e63c5a1..c3daa9a 100644
 --- a/exec.c
 +++ b/exec.c
-@@ -1402,6 +1402,11 @@ static void qemu_ram_setup_dump(void *addr, ram_addr_t
-size)
+@@ -1372,6 +1372,11 @@ static void qemu_ram_setup_dump(void *addr, ram_addr_t size)
      }
  }
-
+ 
 +bool qemu_ram_is_shared(RAMBlock *rb)
 +{
 +    return rb->flags & RAM_SHARED;
@@ -26,38 +15,39 @@ size)
  {
      return rb->idstr;
 diff --git a/include/exec/cpu-common.h b/include/exec/cpu-common.h
-index 952bcfe..7c18db9 100644
+index cffdc13..93736ed 100644
 --- a/include/exec/cpu-common.h
 +++ b/include/exec/cpu-common.h
-@@ -58,6 +58,7 @@ RAMBlock *qemu_ram_block_from_host(void *ptr, bool
-round_offset,
- void qemu_ram_set_idstr(RAMBlock *block, const char *name, DeviceState *dev);
- void qemu_ram_unset_idstr(RAMBlock *block);
- const char *qemu_ram_get_idstr(RAMBlock *rb);
+@@ -120,7 +120,8 @@ typedef int (RAMBlockIterFunc)(const char *block_name, void *host_addr,
+     ram_addr_t offset, ram_addr_t length, void *opaque);
+ 
+ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque);
+-
 +bool qemu_ram_is_shared(RAMBlock *rb);
-
- void cpu_physical_memory_rw(hwaddr addr, uint8_t *buf,
-                             int len, int is_write);
++ 
+ #endif
+ 
+ #endif /* CPU_COMMON_H */
 diff --git a/include/migration/migration.h b/include/migration/migration.h
-index 3c96623..080b6b2 100644
+index 2791b90..b52accd 100644
 --- a/include/migration/migration.h
 +++ b/include/migration/migration.h
-@@ -290,6 +290,7 @@ void migrate_add_blocker(Error *reason);
+@@ -287,6 +287,7 @@ void migrate_add_blocker(Error *reason);
   */
  void migrate_del_blocker(Error *reason);
-
+ 
 +bool migrate_bypass_shared_memory(void);
  bool migrate_postcopy_ram(void);
  bool migrate_zero_blocks(void);
-
+ 
 diff --git a/migration/migration.c b/migration/migration.c
-index 955d5ee..c87d136 100644
+index 4d417b7..4211758 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
-@@ -1189,6 +1189,15 @@ void qmp_migrate_set_downtime(double value, Error **errp)
-     max_downtime = (uint64_t)value;
+@@ -1205,6 +1205,15 @@ void qmp_migrate_set_downtime(double value, Error **errp)
+     qmp_migrate_set_parameters(&p, errp);
  }
-
+ 
 +bool migrate_bypass_shared_memory(void)
 +{
 +    MigrationState *s;
@@ -71,7 +61,7 @@ index 955d5ee..c87d136 100644
  {
      MigrationState *s;
 diff --git a/migration/ram.c b/migration/ram.c
-index 815bc0e..f7c4081 100644
+index bc6154f..13a127b 100644
 --- a/migration/ram.c
 +++ b/migration/ram.c
 @@ -605,6 +605,28 @@ static void migration_bitmap_sync_init(void)
@@ -101,7 +91,7 @@ index 815bc0e..f7c4081 100644
 +    }
 +    rcu_read_unlock();
  }
-
+ 
  static void migration_bitmap_sync(void)
 @@ -631,7 +653,9 @@ static void migration_bitmap_sync(void)
      qemu_mutex_lock(&migration_bitmap_mutex);
@@ -114,20 +104,20 @@ index 815bc0e..f7c4081 100644
      }
      rcu_read_unlock();
      qemu_mutex_unlock(&migration_bitmap_mutex);
-@@ -1926,19 +1950,14 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
+@@ -1928,19 +1952,14 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
      ram_bitmap_pages = last_ram_offset() >> TARGET_PAGE_BITS;
      migration_bitmap_rcu = g_new0(struct BitmapRcu, 1);
      migration_bitmap_rcu->bmap = bitmap_new(ram_bitmap_pages);
 -    bitmap_set(migration_bitmap_rcu->bmap, 0, ram_bitmap_pages);
 +    migration_bitmap_init(migration_bitmap_rcu->bmap);
-
+ 
      if (migrate_postcopy_ram()) {
          migration_bitmap_rcu->unsentmap = bitmap_new(ram_bitmap_pages);
 -        bitmap_set(migration_bitmap_rcu->unsentmap, 0, ram_bitmap_pages);
 +        bitmap_copy(migration_bitmap_rcu->unsentmap,
 +                    migration_bitmap_rcu->bmap, ram_bitmap_pages);
      }
-
+ 
 -    /*
 -     * Count the total number of pages used by ram blocks not including any
 -     * gaps due to alignment or unplugs.
@@ -138,15 +128,14 @@ index 815bc0e..f7c4081 100644
      migration_bitmap_sync();
      qemu_mutex_unlock_ramlist();
 diff --git a/qapi-schema.json b/qapi-schema.json
-index 5658723..453e6d9 100644
+index 5a8ec38..4b6486c 100644
 --- a/qapi-schema.json
 +++ b/qapi-schema.json
-@@ -553,11 +553,15 @@
+@@ -574,11 +574,15 @@
  #          been migrated, pulling the remaining pages along as needed. NOTE: If
  #          the migration fails during postcopy the VM will fail.  (since 2.6)
  #
-+# @bypass-shared-memory: the shared memory region will be bypassed on
-migration.
++# @bypass-shared-memory: the shared memory region will be bypassed on migration.
 +#          This feature allows the memory region to be reused by new qemu(s)
 +#          or be migrated separately. (since 2.8)
 +#
@@ -156,35 +145,6 @@ migration.
    'data': ['xbzrle', 'rdma-pin-all', 'auto-converge', 'zero-blocks',
 -           'compress', 'events', 'postcopy-ram'] }
 +           'compress', 'events', 'postcopy-ram', 'bypass-shared-memory'] }
-
+ 
  ##
  # @MigrationCapabilityStatus
-diff --git a/qmp-commands.hx b/qmp-commands.hx
-index c8d360a..c31152c 100644
---- a/qmp-commands.hx
-+++ b/qmp-commands.hx
-@@ -3723,6 +3723,7 @@ Enable/Disable migration capabilities
- - "compress": use multiple compression threads to accelerate live migration
- - "events": generate events for each migration state change
- - "postcopy-ram": postcopy mode for live migration
-+- "bypass-shared-memory": bypass shared memory region
-
- Arguments:
-
-@@ -3753,6 +3754,7 @@ Query current migration capabilities
-          - "compress": Multiple compression threads state (json-bool)
-          - "events": Migration state change event state (json-bool)
-          - "postcopy-ram": postcopy ram state (json-bool)
-+         - "bypass-shared-memory": bypass shared memory state (json-bool)
-
- Arguments:
-
-@@ -3767,6 +3769,7 @@ Example:
-      {"state": false, "capability": "compress"},
-      {"state": true, "capability": "events"},
-      {"state": false, "capability": "postcopy-ram"}
-+     {"state": false, "capability": "bypass-shared-memory"}
-    ]}
-
- EQMP
----
