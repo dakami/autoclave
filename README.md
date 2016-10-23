@@ -1,12 +1,14 @@
 # AutoClave
 
 # TL;DR
-
 If you allow QEMU to set itself up, it really doesn't require much from the kernel.  So use seccomp-bpf to limit
 a full empowered VM -- that can execute Linux, Windows, and probably OSX, along with whatever container you like -- to 
 a handful of syscalls and memory maps.
 
 # Quick Demo
+
+https://autoclave.run has a pretty good demonstration of the ultimate vision here,
+but here's some quick steps to get up and running yourself.
 
 (This is very early, only supporting firewall-on-VNC connection in this patchset)
 
@@ -49,4 +51,6 @@ a handful of syscalls and memory maps.
     
 
     
-    
+# TODO
+
+Lots!
