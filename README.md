@@ -5,6 +5,11 @@ If you allow QEMU to set itself up, it really doesn't require much from the kern
 a full empowered VM -- that can execute Linux, Windows, and probably OSX, along with whatever container you like -- to 
 a handful of syscalls and memory maps.
 
+Also if you do some clever things with memory management you can boot an arbitrarily
+complex environment *subsecond*, with memory deduplication *in a safe context* 
+(no user data, only leaks what a dev puts in).  Maybe we don't need Unikernels,
+to give known good state to every user coming in.
+
 # Quick Demo
 
 https://autoclave.run has a pretty good demonstration of the ultimate vision here,
@@ -53,4 +58,28 @@ but here's some quick steps to get up and running yourself.
     
 # TODO
 
-Lots!
+1. Comprehensively document the exposed syscalls, memory maps, and file handles
+2. Modify QEMU to reduce #1 to bare minimums, at least for specified performance levels
+3. Manage exposure of /dev/kvm to untrusted users, modifying the module if necessary
+4. Integrate dirtycow exploit into QMP, so we can see whether KVM_RUN semantics
+   do or do not suppress thread races
+5. Determine whether snapshot/loadvm conflict is resolved in QEMU Master, and if not,
+   integrate patches.
+6. Move apply_autoclave out of vnc.c (sigh) and into somewhere it can be called,
+   somewhat generically, either right before VM start (in vl.c) or on network
+   connection (vnc and spice)
+7. Dive back into the monolithic beast that is libvirt, because we actually do
+   want to work with the rest of the ecosystem
+8. Figure out proper performance engineering, use of hugepages (explicit/transparent/
+   blocked).
+9. Finish extraction and demonstration to level of https://autoclave.run, i.e. actually
+   show use of bypass_shared_memory
+10. Make https://autoclave.run a thing that is scalable
+11. Make Autoclave work well under nested virtualization, or at least understand
+    what that would take (probably guarantees around linearized memory mapping)
+12. Resolve precisely when xinetd should receive a VNC connection string, rather
+    than just spitballing it.  Connections trigger the autoclave lockdown, so
+    this does matter.
+13. Integrate with Intel Clear Containers
+14. Integrate with Docker
+15. Expand this document!
