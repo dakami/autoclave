@@ -82,4 +82,6 @@ but here's some quick steps to get up and running yourself.
     this does matter.
 13. Integrate with Intel Clear Containers
 14. Integrate with Docker
+15. Map out how to host web servers like Guacamole, instead of VNC/Spice like
+    interfaces.
 15. Expand this document!
