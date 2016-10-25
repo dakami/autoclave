@@ -1,9 +1,16 @@
 # AutoClave
 
 # TL;DR
-If you allow QEMU to set itself up, it really doesn't require much from the kernel.  So use seccomp-bpf to limit
-a full empowered VM -- that can execute Linux, Windows, and probably OSX, along with whatever container you like -- to 
-a handful of syscalls and memory maps.
+
+No more "sandboxes" that don't work in practice.  Devs need root, Ops needs speed,
+Security needs well defined interfaces and known good state.
+
+Basically, seccomp-bpf on QEMU *after process start* but *before attacker
+interaction* can deliver, because after setup, the userspace-focused QEMU
+requires really not much from the kernel, in order to run not just Linux
+(or its containers), but Windows and probably OSX as well.
+
+All the compat, handful of syscalls, couple of memory maps and open files.
 
 Also if you do some clever things with memory management you can boot an arbitrarily
 complex environment *subsecond*, with memory deduplication *in a safe context* 
@@ -84,4 +91,6 @@ but here's some quick steps to get up and running yourself.
 14. Integrate with Docker
 15. Map out how to host web servers like Guacamole, instead of VNC/Spice like
     interfaces.
-15. Expand this document!
+16. Replace slirpvde/vde_switch with a safe daemon (one of the obvious ways to 
+    attack the present implementation)
+17. Expand this document!
