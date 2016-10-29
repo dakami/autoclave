@@ -17,4 +17,6 @@ rm /usr/bin/qemu-lite-system-x86_64 /usr/bin/qemu-lite-ga /usr/bin/virtfs-lite-p
 ln -s /usr/bin/qemu-system-x86_64 /usr/bin/qemu-lite-system-x86_64
 ln -s /usr/bin/qemu-ga /usr/bin/qemu-lite-ga
 ln -s /usr/bin/virtfs-proxy-helper /usr/bin/virtfs-lite-proxy-helper
+chmod 0777 /dev/kvm # yeah, I know
+
 
