@@ -9,7 +9,7 @@ cd qemu-lite
 git checkout qemu-2.7-lite
 git reset --hard qemu-2.7-lite
 cp -p ../blobs/qemu-config.sh .
-patch -p1 < ../../patches_to_be_migrates/vl_autoclave.patch
+patch -p1 < ../../patches_to_be_migrated/vl_autoclave.patch
 ./qemu-config.sh
 make
 make install
