@@ -22,10 +22,7 @@ to give known good state to every user coming in.
 https://autoclave.run has a pretty good demonstration of the ultimate vision here,
 but here's some quick steps to get up and running yourself.
 
-(This is very early, only supporting firewall-on-VNC connection in this patchset)
-
-(No, I haven't tested this yet.  RELENG!)
-
+    ### git clone the repository and cd into it
     # apt-get install vde2 libvde-dev libvdeplug-dev libseccomp-dev git
     ### You need to add deb-src for deb line in /etc/apt/sources.list,
     ### because Reasons
@@ -58,6 +55,9 @@ but here's some quick steps to get up and running yourself.
     ### But now, let's connect.  (TODO, insert nice pretty screenshot.)
     (qemu) migrate "exec: ls"
     Unable to open /dev/null: Permission denied
+    ### Meanwhile, you can VNC into the VM as so:
+    apt-get install vncviewer
+    vncviewer 127.0.0.1:25 # or wherever your server is    
 
 
     
